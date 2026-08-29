@@ -55,11 +55,12 @@ test file. **These are the only two models NF4DQ has been tested on.** See
 Throughput, 27B on A100: prefill 729.84 tok/s, decode 60.21 tok/s, decode with
 MTP 92.56 tok/s.
 
-**What this does and does not show.** Against uncalibrated K-quants from the
-same source, NF4DQ sits above llama.cpp's own size-quality curve: interpolating
-between Q3_K_M and Q4_K_M puts a K-quant at 4.16 bpw near 7.29, and NF4DQ
-measured 7.089. Against Unsloth's calibrated Dynamic v3.0 builds at matched
-size, NF4DQ loses by about 1.2%. Both comparisons are on the 27B.
+**What this does and does not show.** NF4DQ sits above llama.cpp's own
+size-quality curve for K-quants: interpolating between Q3_K_M and Q4_K_M puts
+a K-quant at 4.16 bpw near 7.29, and NF4DQ measured 7.089 on the 27B. This is
+a comparison against uncalibrated quants produced from the same source model.
+Calibrated builds, which use an importance matrix derived from sample data,
+are a separate class and are not compared here.
 
 ---
 
