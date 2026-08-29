@@ -41,8 +41,6 @@ test file. **These are the only two models NF4DQ has been tested on.** See
 |---|---|---|
 | BF16 | 50.9 GiB | 6.9530 |
 | Q4_K_M | 15.652 GiB | 6.9787 |
-| Unsloth UD-IQ4_XS | 13.27 GiB | 7.0036 |
-| Unsloth UD-Q3_K_XL | 12.24 GiB | 7.0669 |
 | **NF4DQ** | **13.230 GiB** | **7.0890** |
 | Q3_K_M | 12.643 GiB | 7.3362 |
 
