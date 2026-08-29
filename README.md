@@ -1,126 +1,229 @@
-# llama.cpp
+# llama.cpp with NF4DQ
 
-![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
+A fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) adding **NF4DQ**,
+a 4.1562 bits-per-weight quantisation type: NF4 levels with a second
+quantisation stage on the sub-block scales.
 
-<div align="center">
+Everything upstream works as normal. This adds one type.
 
-<b>LLM inference in C/C++</b>
+---
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Release](https://img.shields.io/github/v/release/ggml-org/llama.cpp?filter=v*&color=brightgreen)](https://github.com/ggml-org/llama.cpp/releases?q=tag:v0)
-[![Nightly](https://img.shields.io/github/v/release/ggml-org/llama.cpp?label=nightly&filter=b*&color=orange)](https://github.com/ggml-org/llama.cpp/releases?q=b)
-[![Server](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/server.yml?label=Server)](https://github.com/ggml-org/llama.cpp/actions/workflows/server.yml)
-[![Docker](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/docker.yml?label=Docker)](https://github.com/ggml-org/llama.cpp/actions/workflows/docker.yml)
-[![Winget](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/winget.yml?label=Winget)](https://github.com/ggml-org/llama.cpp/actions/workflows/winget.yml)
+## What it is
 
-[ggml](https://github.com/ggml-org/ggml) / [ops](https://github.com/ggml-org/llama.cpp/blob/master/docs/ops.md) / [maintainer PRs](https://github.com/ggml-org/llama.cpp/issues?q=is%3Apr%20is%3Aopen%20draft%3AFalse%20(author%3Argerganov%20OR%20author%3AKitaitiMakoto%20OR%20author%3Adanbev%20OR%20author%3Aaldehir%20OR%20author%3Amax-krasnyansky%20OR%20author%3ACISC%20OR%20author%3Aggerganov%20OR%20author%3Aam17an%20OR%20author%3Abartowski1182%20OR%20author%3Anikwen%20OR%20author%3Ahipudding%20OR%20author%3AServeurpersoCom%20OR%20author%3Apwilkin%20OR%20author%3Areeselevine%20OR%20author%3Angxson%20OR%20author%3Ajeffbolznv%20OR%20author%3Amarty1885%20OR%20author%3A0cc4m%20OR%20author%3ATitaniumtown%20OR%20author%3Aangt%20OR%20author%3AIMbackK%20OR%20author%3Aarthw%20OR%20author%3AJohannesGaessler%20OR%20author%3AORippler%20OR%20author%3Aruixiang63%20OR%20author%3Axctan%20OR%20author%3Aallozaur%20OR%20author%3Ayomaytk%20OR%20author%3Aaendk%20OR%20author%3Agaugarg-nv%20OR%20author%3Ataronaeo%20OR%20author%3Aforforever73%20OR%20author%3Alhez%20OR%20author%3Anetrunnereve%20OR%20author%3Afairydreaming)%20sort%3Aupdated-desc) / [dev stats](https://github.com/ggml-org/llama.cpp-dev) / [lib llama API](https://github.com/ggml-org/llama.cpp/issues/9289) / [llama-server REST API](https://github.com/ggml-org/llama.cpp/issues/9291)
+NF4DQ is a new ggml block type, not a bit-allocation recipe layered on
+existing types. It is a new entry in the menu that recipes like `Q4_K_M`
+choose from.
 
-</div>
+Each 1024-weight superblock is 532 bytes:
 
-## Quick start
+| Field | Bytes | Contents |
+|---|---|---|
+| `qs` | 512 | 4-bit weight indices into an int8 NF4 codebook |
+| `sc` | 16 | 4-bit scale indices, one per 32-weight sub-block |
+| `d` | 2 | fp16 super-scale |
+| `pad` | 2 | 4-byte alignment (required, see the header) |
 
-A few options to get `llama.cpp` installed on your machine:
+The design rationale, the fitting data behind every constant, and the list of
+approaches that were measured and rejected are in
+[`docs/nf4dq-design.md`](docs/nf4dq-design.md).
 
-- Visit https://llama.app and follow the instructions
-- Run with Docker - see our [Docker documentation](docs/docker.md)
-- Download pre-built binaries from the [releases page](https://github.com/ggml-org/llama.cpp/releases)
-- Build from source by cloning this repository - check out [our build guide](docs/build.md)
+---
 
-Once installed:
+## Results
 
-```sh
-# Download and run a model directly from Hugging Face
-llama cli -hf ggml-org/Qwen3.5-0.8B-GGUF
+Measured on wikitext-2, A100-80GB, perplexity at context 512 over the full
+test file. **These are the only two models NF4DQ has been tested on.** See
+[Limits](#limits) before reading anything more general into them.
 
-# Launch OpenAI-compatible API server
-llama serve -hf ggml-org/Qwen3.5-0.8B-GGUF
+**Qwen3.8-27B**
+
+| Build | Size | PPL @512 |
+|---|---|---|
+| BF16 | 50.9 GiB | 6.9530 |
+| Q4_K_M | 15.652 GiB | 6.9787 |
+| Unsloth UD-IQ4_XS | 13.27 GiB | 7.0036 |
+| Unsloth UD-Q3_K_XL | 12.24 GiB | 7.0669 |
+| **NF4DQ** | **13.230 GiB** | **7.0890** |
+| Q3_K_M | 12.643 GiB | 7.3362 |
+
+**Qwen3.5-9B**
+
+| Build | Size | PPL @512 |
+|---|---|---|
+| Q4_K_M | 5.280 GiB | 8.2055 |
+| **NF4DQ** | **4.346 GiB** | **8.4181** |
+| Q3_K_M | 4.342 GiB | 9.2978 |
+
+Throughput, 27B on A100: prefill 729.84 tok/s, decode 60.21 tok/s, decode with
+MTP 92.56 tok/s.
+
+**What this does and does not show.** Against uncalibrated K-quants from the
+same source, NF4DQ sits above llama.cpp's own size-quality curve: interpolating
+between Q3_K_M and Q4_K_M puts a K-quant at 4.16 bpw near 7.29, and NF4DQ
+measured 7.089. Against Unsloth's calibrated Dynamic v3.0 builds at matched
+size, NF4DQ loses by about 1.2%. Both comparisons are on the 27B.
+
+---
+
+## Build
+
+Exactly as upstream. No patch step, nothing to copy in.
+
+```bash
+git clone https://github.com/KayceeSamuel/llama.cpp
+cd llama.cpp
+cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
 ```
 
-<table align="center">
-    <tr>
-        <td align="center" width=50%>
-            <img width="1310" height="888" alt="VLM session with `llama cli`" src="https://github.com/user-attachments/assets/88726b48-1713-48aa-a525-95a02e78afc4" />
-            <i>VLM session with <b>llama cli</b></i>
-        </td>
-        <td align="center">
-            <img width="1392" height="958" alt="Built-in web UI against `llama serve` running Qwen 3.6" src="https://github.com/user-attachments/assets/b402f972-2e32-4def-8771-8d849f08cf2e" />
-            <i>Built-in web UI against <b>llama serve</b></i>
-        </td>
-    </tr>
-<table>
+CUDA is currently the only accelerated backend. See [Limits](#limits).
 
-## Description
+---
 
-The main goal of `llama.cpp` is to enable LLM (and VLM) inference with minimal setup and state-of-the-art performance on
-a wide range of hardware - locally and in the cloud.
+## Will it work on your model?
 
-- Plain C/C++ implementation without any dependencies
-- Apple silicon is a first-class citizen - optimized via ARM NEON, Accelerate and Metal frameworks
-- AVX, AVX2, AVX512 and AMX support for x86 architectures
-- RVV, ZVFH, ZFH, ZICBOP and ZIHINTPAUSE support for RISC-V architectures
-- 1.5-bit, 2-bit, 3-bit, 4-bit, 5-bit, 6-bit, and 8-bit integer quantization for faster inference and reduced memory use
-- Custom CUDA kernels for running LLMs on NVIDIA GPUs (support for AMD GPUs via HIP and Moore Threads GPUs via MUSA)
-- Vulkan and SYCL backend support
-- CPU+GPU hybrid inference to partially accelerate models larger than the total VRAM capacity
+Check this first. It is a hard mechanical constraint, and if a model fails it
+`llama-quantize` will refuse rather than produce a bad file.
 
-The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-org/ggml) library.
+ggml requires the block size to divide the row length. `QK_NF4DQ` is 1024, so
+every 2-D tensor's row width must be a multiple of 1024.
 
-## Supported backends
+```python
+from gguf import GGUFReader
+r = GGUFReader("model-BF16.gguf")
+bad = [t.name for t in r.tensors if len(t.shape) > 1 and t.shape[0] % 1024]
+print(len(bad), "tensors not divisible by 1024")
+print(bad[:10])
+```
 
-| Backend | Target devices |
-| --- | --- |
-| [BLAS](docs/build.md#blas-build) | All |
-| [BLIS](docs/backend/BLIS.md) | All |
-| [CANN](docs/build.md#cann) | Ascend NPU |
-| [CUDA](docs/build.md#cuda) | Nvidia GPU |
-| [HIP](docs/build.md#hip) | AMD GPU |
-| [Hexagon [In Progress]](docs/backend/snapdragon/README.md) | Snapdragon |
-| [IBM zDNN](docs/backend/zDNN.md) | IBM Z & LinuxONE |
-| [MUSA](docs/build.md#musa) | Moore Threads GPU |
-| [Metal](docs/build.md#metal-build) | Apple Silicon |
-| [OpenCL](docs/backend/OPENCL.md) | Adreno GPU |
-| [OpenVINO [In Progress]](docs/backend/OPENVINO.md) | Intel CPUs, GPUs, and NPUs |
-| [RPC](https://github.com/ggml-org/llama.cpp/tree/master/tools/rpc) | All |
-| [SYCL](docs/backend/SYCL.md) | Intel GPU |
-| [VirtGPU](docs/backend/VirtGPU.md) | VirtGPU APIR |
-| [Vulkan](docs/build.md#vulkan) | GPU |
-| [WebGPU](docs/build.md#webgpu) | All |
-| [ZenDNN](docs/build.md#zendnn) | AMD CPU |
+Zero means your model is **dimensionally eligible**: it will quantise. It does
+not mean anyone has measured the quality. Only the two Qwen models above have
+been evaluated.
 
-## Documentation
+If tensors are refused, `QK_NF4DQ` can be dropped to 512 (4.1719 bpw) or 256
+(4.1875 bpw). Reconstruction error is flat across that range, so the only cost
+is bits.
 
-#### Tools
+---
 
-- [cli](tools/cli/README.md)
-- [completion](tools/completion/README.md)
-- [server](tools/server/README.md)
-- [GBNF grammars](grammars/README.md)
+## Quantise and run
 
-#### Development
+```bash
+# 1. Quantise. Reports 4.16 BPW and should refuse nothing.
+./build/bin/llama-quantize model-BF16.gguf model-NF4DQ.gguf NF4DQ
 
-- [How to build](docs/build.md)
-- [Running on Docker](docs/docker.md)
-- [Build on Android](docs/android.md)
-- [Multi-GPU usage](docs/multi-gpu.md)
-- [Performance troubleshooting](docs/development/token_generation_performance_tips.md)
-- [GGML tips & tricks](https://github.com/ggml-org/llama.cpp/wiki/GGML-Tips-&-Tricks)
-- [XCFramework](docs/xcframework.md)
-- [Completions](docs/completions.md)
-- [Models](docs/models.md)
-- [Release process](docs/release.md)
+# 2. Generate, to confirm coherent output.
+./build/bin/llama-completion -m model-NF4DQ.gguf -ngl 99 -p "The capital of France is"
 
-## Contributing
+# 3. Throughput.
+./build/bin/llama-bench -m model-NF4DQ.gguf -ngl 99 -p 512 -n 128
 
-- Contributors can open PRs
-- Collaborators will be invited based on contributions
-- Maintainers can push to branches in the `llama.cpp` repo and merge PRs into the `master` branch
-- Any help with managing issues, PRs and projects is very appreciated!
-- Read the [CONTRIBUTING.md](CONTRIBUTING.md) for more information
+# 4. Perplexity.
+./build/bin/llama-perplexity -m model-NF4DQ.gguf -f wiki.test.raw -ngl 99 -c 512
+```
 
-## Acknowledgements
+`llama-cli` drops into an interactive prompt after generating, so use
+`llama-completion` in a non-interactive shell or notebook.
 
-- [yhirose/cpp-httplib](https://github.com/yhirose/cpp-httplib) - Single-header HTTP server, used by `llama-server` - MIT license
-- [nothings/stb](https://github.com/nothings/stb) - Single-header image format decoder, used by multimodal subsystem - Public domain
-- [nlohmann/json](https://github.com/nlohmann/json) - Single-header JSON library, used by various tools/examples - MIT License
-- [mackron/miniaudio](https://github.com/mackron/miniaudio) - Single-header audio format decoder, used by multimodal subsystem - Public domain
-- [sheredom/subprocess.h](https://github.com/sheredom/subprocess.h) - Single-header process launching solution for C and C++ - Public domain
+Optional: `--output-tensor-type Q6_K` gives about 0.64% better perplexity for
+0.36 GiB on the 27B. That is roughly average value per gigabyte, so it is
+offered rather than defaulted.
+
+---
+
+## Limits
+
+Read these before drawing conclusions from the numbers above.
+
+**One architecture family.** Both tested models are hybrid: most layers use
+linear attention rather than full attention. It is not known whether these
+results hold on a conventional dense model. Testing a dense Llama or Mistral is
+the single most useful thing anyone could contribute.
+
+**CUDA only for the fast path.** Dequantisation and a fused decode kernel exist
+for CUDA. There is no Metal, Vulkan or SIMD CPU kernel yet. A scalar CPU
+`vec_dot` exists as a correctness gate, not a performance path.
+
+**Batched prefill falls back.** `mmq.cu` has no NF4DQ tile loader, so prompt
+processing takes the slower path.
+
+**Kernel constants are unmeasured.** The rows-per-block values in `mmvq.cu`
+are copied from IQ4_NL and have not been tuned for a 1024-weight superblock.
+
+**The type ID is fork-local.** NF4DQ is registered as ggml type 43, which is
+currently the next free slot upstream. If upstream adds a quantisation type, a
+stock llama.cpp build will read NF4DQ files as that type and decode garbage
+rather than refusing. **NF4DQ GGUFs require this fork.** Do not assume a file
+that loads elsewhere is being read correctly.
+
+**MoE and vision are untested.** MoE routers should not be quantised, since a
+routing error flips expert selection rather than degrading gently.
+`--tensor-type` can exclude them but this has not been tried. Vision towers
+ship as separate mmproj files in GGUF, so NF4DQ quants are text-only by
+construction.
+
+---
+
+## Prebuilt weights
+
+| Model | Size | Link |
+|---|---|---|
+| Qwen3.5-9B-NF4DQ | 4.35 GiB | `<HF-REPO>` |
+| Qwen3.8-27B-NF4DQ | 13.23 GiB | `<HF-REPO>` |
+
+Both require this fork.
+
+---
+
+## Verifying a build
+
+Three greps that catch the failure modes that have actually happened here:
+
+```bash
+grep -c "NF4DQ_SUB / 2"         ggml/src/ggml-nf4dq.c   # must be 3
+grep -c "define NF4DQ_RESTRICT" ggml/src/ggml-nf4dq.h   # must be 2
+grep -c -- "-88, -67"           ggml/src/ggml-nf4dq.c   # must be 1
+```
+
+The first confirms the ggml nibble packing rather than a naive interleave. The
+second confirms the header parses from `.cu` translation units. The third
+confirms the shipped codebook rather than the globally fitted one, which
+regressed perplexity by 4.7%.
+
+Then the standalone tests, which need no GPU:
+
+```bash
+./build/bin/test-nf4dq    # expect 0.088204 gaussian, 0.101369 with 16-sigma tails
+./build/bin/test-nf4dq-align
+```
+
+Any change to the encoder should move those numbers in the expected direction
+before it is worth spending GPU time. See
+[`docs/nf4dq-design.md`](docs/nf4dq-design.md) for why reconstruction error is
+a gate and not a target.
+
+---
+
+## Reproducing the measurements
+
+```bash
+# Perplexity, one arm
+llama-perplexity -m MODEL.gguf -f wiki.test.raw -ngl 99 -c 512
+
+# KL divergence: reference pass first, then each quant
+llama-perplexity -m BF16.gguf  -f DATA --kl-divergence-base ref.logits -ngl 99 -c 512
+llama-perplexity -m QUANT.gguf -f DATA --kl-divergence \
+                 --kl-divergence-base ref.logits -ngl 99 -c 512
+
+# Throughput
+llama-bench -m MODEL.gguf -ngl 99 -p 512 -n 128
+```
+
+The logits file for a KL run is large: 73.5 GB for the full wikitext test at
+c=512. Plan disk before starting.
+
+---
+
+## Licence
+
+MIT, same as upstream llama.cpp.

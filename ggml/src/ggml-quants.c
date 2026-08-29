@@ -2,6 +2,7 @@
 #include "ggml-common.h"
 
 #include "ggml-quants.h"
+#include "ggml-nf4dq.h"
 #include "ggml-impl.h"
 #include "ggml-cpu/ggml-cpu-impl.h"
 #include "ggml-cpu.h"
@@ -5648,6 +5649,13 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         case GGML_TYPE_IQ4_NL:
             {
                 VALIDATE_ROW_DATA_D_F16_IMPL(block_iq4_nl, data, nb);
+            } break;
+        case GGML_TYPE_NF4DQ:
+            {
+                // Only d is a float, so the standard macro covers this type.
+                // The 4-bit weight and scale indices cannot be invalid: every
+                // value 0..15 is a legal codebook entry by construction.
+                VALIDATE_ROW_DATA_D_F16_IMPL(block_nf4dq, data, nb);
             } break;
 
         case GGML_TYPE_I8:

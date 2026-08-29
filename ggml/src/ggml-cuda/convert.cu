@@ -1,4 +1,5 @@
 #include "convert.cuh"
+#include "../ggml-nf4dq.h"
 #include "dequantize.cuh"
 
 #include <cstdint>
@@ -222,6 +223,47 @@ static __global__ void dequantize_block_iq1_m(const void * __restrict__ vx, dst_
     dequantize_iq1_m(vx, i, yy + i*QK_K, threadIdx.x);
 }
 
+// NF4DQ: 1024-weight superblock, 32 sub-blocks of 32, 4-bit weight indices
+// into an int8 codebook and 4-bit scale indices into a float codebook.
+//
+// The codebooks live in __constant__ memory. A global-memory lookup per
+// weight would dominate the kernel: there are two lookups per weight here,
+// one for the level and one for the sub-block scale.
+static const __device__ int8_t knf4dq_i8[16] = {
+    -127, -88, -67, -50, -36, -23, -12, 0, 10, 20, 31, 43, 56, 71, 92, 127,
+};
+static const __device__ float knf4dq_scale[16] = {
+    0.1126f, 0.1387f, 0.1647f, 0.1973f, 0.2485f, 0.3740f, 0.4436f, 0.4997f,
+    0.5505f, 0.5998f, 0.6500f, 0.7036f, 0.7624f, 0.8286f, 0.9051f, 1.0000f,
+};
+
+template<typename dst_t>
+static __global__ void dequantize_block_nf4dq(const void * __restrict__ vx,
+                                              dst_t * __restrict__ yy) {
+    const int64_t i = blockIdx.x;                    // superblock
+    const block_nf4dq * x = (const block_nf4dq *) vx + i;
+    dst_t * y = yy + i * QK_NF4DQ;
+
+    // d already carries the /127 folded in by the encoder, so there is no
+    // division on this path. See ggml-nf4dq.c.
+    const float d = __half2float(x->d);
+
+    const int s = threadIdx.x;                       // one sub-block per thread
+    if (s >= NF4DQ_NSUB) return;
+
+    const uint8_t sbyte = x->sc[s >> 1];
+    const uint8_t si    = (s & 1) ? (sbyte >> 4) : (sbyte & 0x0F);
+    const float   scale = d * knf4dq_scale[si];
+
+#pragma unroll
+    for (int j = 0; j < NF4DQ_SUB; ++j) {
+        // ggml packing: byte k holds element k (low) and k+16 (high)
+        const uint8_t byte = x->qs[s * (NF4DQ_SUB / 2) + (j & 15)];
+        const uint8_t idx  = (j < 16) ? (byte & 0x0F) : (byte >> 4);
+        y[s * NF4DQ_SUB + j] = (dst_t) ((float) knf4dq_i8[idx] * scale);
+    }
+}
+
 template<typename dst_t>
 static __global__ void dequantize_block_iq4_nl(const void * __restrict__ vx, dst_t * __restrict__ yy) {
     const int64_t i = blockIdx.x;
@@ -348,6 +390,16 @@ template<typename dst_t>
 static void dequantize_row_iq1_s_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
     const int nb = k / QK_K;
     dequantize_block_iq1_s<<<nb, 32, 0, stream>>>(vx, y);
+}
+
+
+template<typename dst_t>
+static void dequantize_row_nf4dq_cuda(const void * vx, dst_t * y,
+                                      const int64_t k, cudaStream_t stream) {
+    const int nb = (k + QK_NF4DQ - 1) / QK_NF4DQ;
+    // 32 threads, one per sub-block. Not 32 because that is ggml's habit:
+    // NF4DQ_NSUB happens to be 32 as well, so the two coincide.
+    dequantize_block_nf4dq<<<nb, NF4DQ_NSUB, 0, stream>>>(vx, y);
 }
 
 template<typename dst_t>
@@ -493,6 +545,8 @@ to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type) {
             return dequantize_row_iq1_s_cuda;
         case GGML_TYPE_IQ1_M:
             return dequantize_row_iq1_m_cuda;
+        case GGML_TYPE_NF4DQ:
+            return dequantize_row_nf4dq_cuda;
         case GGML_TYPE_IQ4_NL:
             return dequantize_row_iq4_nl_cuda;
         case GGML_TYPE_IQ4_XS:
@@ -553,6 +607,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
             return dequantize_row_iq1_s_cuda;
         case GGML_TYPE_IQ1_M:
             return dequantize_row_iq1_m_cuda;
+        case GGML_TYPE_NF4DQ:
+            return dequantize_row_nf4dq_cuda;
         case GGML_TYPE_IQ4_NL:
             return dequantize_row_iq4_nl_cuda;
         case GGML_TYPE_IQ4_XS:
@@ -610,6 +666,8 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
             return dequantize_row_iq1_s_cuda;
         case GGML_TYPE_IQ1_M:
             return dequantize_row_iq1_m_cuda;
+        case GGML_TYPE_NF4DQ:
+            return dequantize_row_nf4dq_cuda;
         case GGML_TYPE_IQ4_NL:
             return dequantize_row_iq4_nl_cuda;
         case GGML_TYPE_IQ4_XS:

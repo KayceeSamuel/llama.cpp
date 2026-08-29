@@ -21,6 +21,7 @@
 #endif
 #endif
 #include "ggml-common.h"
+#include "../ggml-nf4dq.h"
 
 #include <array>
 #include <algorithm>
@@ -1109,6 +1110,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_IQ1_M> {
     static constexpr int qk = QK_K;
     static constexpr int qr = QR1_M;
     static constexpr int qi = QI1_M;
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_NF4DQ> {
+    static constexpr int qk = QK_NF4DQ;   // 1024 weights per superblock
+    static constexpr int qr = 2;          // 2 weights per byte (4-bit)
+    static constexpr int qi = 128;        // 1024/(4*2) = 128 ints, = qs[512]
 };
 
 template<>

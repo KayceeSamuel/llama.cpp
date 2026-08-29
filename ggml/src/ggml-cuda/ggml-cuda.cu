@@ -4971,6 +4971,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_IQ2_XXS:
                     case GGML_TYPE_IQ3_S:
                     case GGML_TYPE_IQ3_XXS:
+                    case GGML_TYPE_NF4DQ:
                     case GGML_TYPE_IQ4_NL:
                     case GGML_TYPE_IQ4_XS:
                     case GGML_TYPE_BF16:
@@ -5009,6 +5010,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_IQ1_M:
                     case GGML_TYPE_IQ4_XS:
                         return true;
+                    case GGML_TYPE_NF4DQ:
                     case GGML_TYPE_IQ4_NL:
                     case GGML_TYPE_MXFP4:
                         // 32-value sub-blocks, the row size does not guarantee

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.cuh"
+#include "../ggml-nf4dq.h"
 
 #include <cstdint>
 
@@ -1308,6 +1309,55 @@ static __device__ __forceinline__ float vec_dot_iq1_m_q8_1(
     const int sc0 = 2*((tmp >> 0) & 0x07) + 1;
     const int sc1 = 2*((tmp >> 3) & 0x07) + 1;
     return d * ((sumi[0] + sumf[0]) * sc0 + (sumi[1] + sumf[1]) * sc1);
+}
+
+
+// NF4DQ: 1024-weight superblock, 32 sub-blocks of 32 weights.
+//
+// Two constant tables. The weight codebook is int8 so the inner loop can use
+// dp4a, one instruction per four multiply-accumulates. The scale codebook
+// stays float because it is consulted once per 32 weights, not per weight.
+static const __device__ int8_t kvalues_nf4dq[16] = {
+    -127, -88, -67, -50, -36, -23, -12, 0, 10, 20, 31, 43, 56, 71, 92, 127,
+};
+static const __device__ float kscales_nf4dq[16] = {
+    0.1126f, 0.1387f, 0.1647f, 0.1973f, 0.2485f, 0.3740f, 0.4436f, 0.4997f,
+    0.5505f, 0.5998f, 0.6500f, 0.7036f, 0.7624f, 0.8286f, 0.9051f, 1.0000f,
+};
+
+#define VDR_NF4DQ_Q8_1_MMVQ 4
+#define VDR_NF4DQ_Q8_1_MMQ  4
+
+static __device__ __forceinline__ float vec_dot_nf4dq_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1,
+    const int & kbx, const int & iqs) {
+
+    const block_nf4dq * bq = (const block_nf4dq *) vbq + kbx;
+
+    // iqs advances 4 ints (32 nibbles, 32 weights) per sub-block, so iqs/4 is
+    // both the sub-block index and the q8_1 block index.
+    const int s = iqs / 4;
+
+    int sumi = 0;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int  aux_q4 = get_int_b4(bq->qs, iqs + j);
+        const int2 v      = get_int_from_table_16(aux_q4, kvalues_nf4dq);
+
+        const int u0 = get_int_b4(bq8_1[s].qs, j + 0);
+        const int u1 = get_int_b4(bq8_1[s].qs, j + 4);
+
+        sumi = ggml_cuda_dp4a(v.x, u0, sumi);
+        sumi = ggml_cuda_dp4a(v.y, u1, sumi);
+    }
+
+    const uint8_t sbyte = bq->sc[s >> 1];
+    const uint8_t si    = (s & 1) ? (sbyte >> 4) : (sbyte & 0x0F);
+
+    // bq->d already carries the /127 from the int8 codebook, folded in by the
+    // encoder, so there is no division here.
+    const float d = __half2float(bq->d) * __low2float(bq8_1[s].ds);
+    return d * kscales_nf4dq[si] * sumi;
 }
 
 #define VDR_IQ4_NL_Q8_1_MMVQ 2
