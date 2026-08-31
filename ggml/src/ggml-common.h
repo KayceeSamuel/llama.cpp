@@ -459,6 +459,22 @@ typedef struct {
 } block_iq4_xs;
 static_assert(sizeof(block_iq4_xs) == sizeof(ggml_half) + sizeof(uint16_t) + QK_K/64 + QK_K/2, "wrong iq4_xs block size/padding");
 
+// NF4 with double quantisation. 1024 weights per superblock, 32 per sub-block.
+// qs: byte b of a sub-block holds weight b in the low nibble and weight b+16
+// in the high nibble (NOT interleaved). sc: 4-bit index into the scale
+// codebook, one per sub-block. d: fp16 super-scale, carries a folded /127.
+// pad is required for 4-byte alignment, not slack.
+#define QK_NF4DQ   1024
+#define NF4DQ_SUB    32
+#define NF4DQ_NSUB (QK_NF4DQ / NF4DQ_SUB)
+typedef struct {
+    uint8_t   qs[QK_NF4DQ/2];
+    uint8_t   sc[NF4DQ_NSUB/2];
+    ggml_half d;
+    uint8_t   pad[2];
+} block_nf4dq;
+static_assert(sizeof(block_nf4dq) == QK_NF4DQ/2 + NF4DQ_NSUB/2 + sizeof(ggml_half) + 2, "wrong nf4dq block size/padding");
+
 #endif // GGML_COMMON_DECL
 #endif // GGML_COMMON_DECL
 

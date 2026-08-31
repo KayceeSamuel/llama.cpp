@@ -45,6 +45,19 @@ constexpr constant static float kvalues_mxfp4_f[16] = {
     0, .5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f, -0, -.5f, -1.f, -1.5f, -2.f, -3.f, -4.f, -6.f
 };
 
+// NF4DQ weight codebook, int8 grid. Matches NF4DQ_I8 on the CPU side exactly,
+// so Metal and CPU decode bit-identically.
+constexpr constant static float kvalues_nf4dq_f[16] = {
+    -127.f, -88.f, -67.f, -50.f, -36.f, -23.f, -12.f, 0.f,
+      10.f,  20.f,  31.f,  43.f,  56.f,  71.f,  92.f, 127.f
+};
+
+// NF4DQ sub-block scale codebook, as fractions of the superblock absmax.
+constexpr constant static float kvalues_nf4dq_scale_f[16] = {
+    0.1126f, 0.1387f, 0.1647f, 0.1973f, 0.2485f, 0.3740f, 0.4436f, 0.4997f,
+    0.5505f, 0.5998f, 0.6500f, 0.7036f, 0.7624f, 0.8286f, 0.9051f, 1.0000f
+};
+
 static inline int best_index_int8(int n, constant float * val, float x) {
     if (x <= val[0]) return 0;
     if (x >= val[n-1]) return n-1;

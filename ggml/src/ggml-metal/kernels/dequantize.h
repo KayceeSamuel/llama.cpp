@@ -715,6 +715,30 @@ void dequantize_iq4_xs(device const block_iq4_xs * xb, short il, thread type4x4 
     }
 }
 
+// NF4DQ: 1024 weights per block, so il runs 0..63 and each call produces 16.
+// Weights [il*16, il*16+16) live in sub-block il/2. Because the packing puts
+// weight b and b+16 of a sub-block in the low and high nibble of byte b, an
+// even il is exactly the 16 low nibbles and an odd il the 16 high nibbles.
+template <typename type4x4>
+void dequantize_nf4dq(device const block_nf4dq * xb, short il, thread type4x4 & reg) {
+    const short s    = il >> 1;          // sub-block, 0..31
+    const short high = il & 1;           // 0 = low nibbles, 1 = high nibbles
+
+    const uint8_t sbyte = xb->sc[s >> 1];
+    const uint8_t si    = (s & 1) ? (sbyte >> 4) : (sbyte & 0x0F);
+
+    // d already carries the folded /127
+    const float scale = (float) xb->d * kvalues_nf4dq_scale_f[si];
+
+    device const uint8_t * qs = xb->qs + s * (NF4DQ_SUB / 2);
+
+    for (short k = 0; k < 16; ++k) {
+        const uint8_t byte = qs[k];
+        const uint8_t idx  = high ? (byte >> 4) : (byte & 0x0F);
+        reg[k / 4][k % 4]  = scale * kvalues_nf4dq_f[idx];
+    }
+}
+
 template <typename type4x4>
 void dequantize_tq2_0(device const block_tq2_0 * xb, short il, thread type4x4 & reg) {
     device const uint8_t * qs = xb->qs;

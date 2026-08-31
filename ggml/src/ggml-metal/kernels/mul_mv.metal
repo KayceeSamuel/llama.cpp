@@ -2843,6 +2843,108 @@ void kernel_mul_mv_iq4_xs_f32_impl(
     }
 }
 
+// NF4DQ matrix-vector.
+//
+// A superblock is 1024 weights in 32 sub-blocks of 32, and a simdgroup is 32
+// threads, so each thread owns exactly one sub-block and simd_sum collapses
+// the 32 partial dot products at the end. That mapping is why this kernel is
+// simpler than the IQ4 ones: no intra-thread sub-block indexing at all.
+//
+// Within a sub-block, byte k of qs holds weight k in the low nibble and weight
+// k+16 in the high nibble, so one byte load serves two weights 16 apart.
+template<int NR0, typename args_t>
+void kernel_mul_mv_nf4dq_f32_impl(
+        args_t args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        threadgroup  char * shmem,
+        uint3  tgpig,
+        ushort tiisg,
+        ushort sgitg) {
+    const short NSG = FC_mul_mv_nsg;
+
+    threadgroup float * shmem_f32 = (threadgroup float *) shmem;
+
+    const int r0 = tgpig.x;
+    const int r1 = tgpig.y;
+    const int im = tgpig.z;
+    const int first_row = (r0 * NSG + sgitg) * NR0;
+
+    const uint i12 = im%FC_mul_mv_ne12;
+    const uint i13 = im/FC_mul_mv_ne12;
+
+    const uint64_t offset0 = first_row*args.nb01 + (i12/FC_mul_mv_r2)*args.nb02 + (i13/FC_mul_mv_r3)*args.nb03;
+    const uint64_t offset1 =        r1*args.nb11 + (i12        )*args.nb12 + (i13        )*args.nb13;
+
+    device const block_nf4dq * x = (device const block_nf4dq *) (src0 + offset0);
+    device const float       * y = (device const float       *) (src1 + offset1);
+
+    const int nb   = args.ne00/QK_NF4DQ;
+    const int ns01 = args.nb01/args.nb00;
+
+    shmem_f32[tiisg] = kvalues_nf4dq_f[tiisg%16];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float sumf[NR0] = {0.f};
+
+    // this thread's sub-block within every superblock
+    const short s = tiisg;
+
+    for (int ib = 0; ib < nb && ib < ns01; ++ib) {
+        device const float * yb = y + (uint64_t)ib*QK_NF4DQ + s*NF4DQ_SUB;
+
+        float4 ylo[4], yhi[4];
+        device const float4 * y4 = (device const float4 *) yb;
+        FOR_UNROLL (short i = 0; i < 4; ++i) {
+            ylo[i] = y4[i];       // weights  0..15 of this sub-block
+            yhi[i] = y4[i + 4];   // weights 16..31
+        }
+
+        for (short row = 0; row < NR0; ++row) {
+            device const block_nf4dq & xb = x[row*ns01 + ib];
+
+            const uint8_t sbyte = xb.sc[s >> 1];
+            const uint8_t si    = (s & 1) ? (sbyte >> 4) : (sbyte & 0x0F);
+
+            device const uint8_t * qs = xb.qs + s*(NF4DQ_SUB/2);
+
+            float acc = 0.f;
+            FOR_UNROLL (short k = 0; k < 16; ++k) {
+                const uint8_t byte = qs[k];
+                acc += ylo[k/4][k%4] * shmem_f32[byte & 0x0F];
+                acc += yhi[k/4][k%4] * shmem_f32[byte >>   4];
+            }
+
+            // d already carries the folded /127
+            sumf[row] += (float)xb.d * kvalues_nf4dq_scale_f[si] * acc;
+        }
+    }
+
+    device float * dst_f32 = (device float *) dst + (uint64_t)im*args.ne0*args.ne1 + (uint64_t)r1*args.ne0;
+
+    for (int row = 0; row < NR0 && first_row + row < args.ne0; ++row) {
+        float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst_f32[first_row + row] = sum_all;
+        }
+    }
+}
+
+[[host_name("kernel_mul_mv_nf4dq_f32")]]
+kernel void kernel_mul_mv_nf4dq_f32(
+        constant ggml_metal_kargs_mul_mv & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+
+    kernel_mul_mv_nf4dq_f32_impl<N_R0_NF4DQ, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
+}
+
 [[host_name("kernel_mul_mv_iq4_xs_f32")]]
 kernel void kernel_mul_mv_iq4_xs_f32(
         constant ggml_metal_kargs_mul_mv & args,
@@ -3222,4 +3324,5 @@ template [[host_name("kernel_mul_mv_id_iq3_s_f32")]]   kernel kernel_mul_mv_id_t
 template [[host_name("kernel_mul_mv_id_iq2_s_f32")]]   kernel kernel_mul_mv_id_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_iq2_s_f32_impl  <N_R0_IQ2_S>>>;
 template [[host_name("kernel_mul_mv_id_iq4_nl_f32")]]  kernel kernel_mul_mv_id_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_iq4_nl_f32_impl <N_R0_IQ4_NL>>>;
 template [[host_name("kernel_mul_mv_id_iq4_xs_f32")]]  kernel kernel_mul_mv_id_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_iq4_xs_f32_impl <N_R0_IQ4_XS>>>;
+template [[host_name("kernel_mul_mv_id_nf4dq_f32")]]   kernel kernel_mul_mv_id_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_nf4dq_f32_impl  <N_R0_NF4DQ>>>;
 template [[host_name("kernel_mul_mv_id_tq2_0_f32")]]   kernel kernel_mul_mv_id_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_tq2_0_f32_impl  <N_R0_TQ2_0>>>;

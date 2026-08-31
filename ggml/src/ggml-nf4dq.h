@@ -65,24 +65,13 @@
 extern "C" {
 #endif
 
-#define QK_NF4DQ     1024   // weights per superblock
-#define NF4DQ_SUB      32   // weights per sub-block
-#define NF4DQ_NSUB    (QK_NF4DQ / NF4DQ_SUB)
-
-typedef struct {
-    uint8_t     qs[QK_NF4DQ / 2];     // 512 bytes: packed 4-bit weight indices
-    uint8_t     sc[NF4DQ_NSUB / 2];   //  16 bytes: packed 4-bit scale indices
-    ggml_half   d;                    //   2 bytes: super-scale
-    uint8_t     pad[2];               //   2 bytes: 4-byte alignment
-} block_nf4dq;                        // 532 bytes total
-
-// A silently padded struct would produce a file that is the right size on one
-// compiler and the wrong size on another, which stays invisible until someone
-// else tries to load the checkpoint.
-typedef char nf4dq_size_check[(sizeof(block_nf4dq) == 532) ? 1 : -1];
+// QK_NF4DQ, NF4DQ_SUB, NF4DQ_NSUB and block_nf4dq are defined in
+// ggml-common.h, alongside every other ggml block type. They live there rather
+// than here because the Metal shader compiler only ever sees ggml-common.h,
+// so a definition in this header would be invisible to the Metal kernels.
 
 // The alignment check is the one that matters: a 532-byte struct the compiler
-// still aligns to 2 would pass the size check and fail in the CUDA kernel.
+// still aligns to 2 would pass a size check and fail in the CUDA kernel.
 typedef char nf4dq_align_check[(sizeof(block_nf4dq) % 4 == 0) ? 1 : -1];
 
 // The 16 NF4 levels: quantiles of a standard normal, normalised to [-1, 1].
