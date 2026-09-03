@@ -1,0 +1,193 @@
+name: Release llama-server
+
+# Builds the binaries CIU's installer downloads, so users do not have to
+# compile llama.cpp themselves. That compile is twenty minutes and a working
+# toolchain, and it is the single biggest obstacle to anyone trying this.
+#
+# Tag a release to publish:
+#   git tag nf4dq-v0.1 && git push origin nf4dq-v0.1
+
+on:
+  push:
+    tags: ['nf4dq-v*']
+  workflow_dispatch:        # also runnable by hand from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  macos-arm64:
+    runs-on: macos-14       # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          # Metal is on by default on Apple Silicon. CURL is needed for the
+          # server's web UI assets.
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=ON
+          cmake --build build -j$(sysctl -n hw.ncpu) --target llama-server llama-quantize llama-bench
+
+      - name: Package
+        run: |
+          mkdir -p out
+          cp build/bin/llama-server build/bin/llama-quantize build/bin/llama-bench out/
+          cp build/bin/*.dylib out/ 2>/dev/null || true
+          # llama-server is a thin wrapper that links the shared libraries, so
+          # they have to travel with it. Rewrite the load paths to be relative
+          # to the binary, otherwise it only runs from the build directory.
+          for f in out/llama-server out/llama-quantize out/llama-bench; do
+            install_name_tool -add_rpath @executable_path "$f" 2>/dev/null || true
+          done
+          tar -czf llama-server-macos-arm64.tar.gz -C out .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: llama-server-macos-arm64.tar.gz
+
+  linux-cpu:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=ON
+          cmake --build build -j$(nproc) --target llama-server llama-quantize llama-bench
+
+      - name: Package
+        run: |
+          mkdir -p out
+          cp build/bin/llama-server build/bin/llama-quantize build/bin/llama-bench out/
+          cp build/bin/*.so out/ 2>/dev/null || true
+          tar -czf llama-server-linux-x64-cpu.tar.gz -C out .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-cpu
+          path: llama-server-linux-x64-cpu.tar.gz
+
+  linux-cuda:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.4.1'
+          method: network
+          sub-packages: '["nvcc","cudart","cublas","cublas-dev"]'
+
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+
+      - name: Build
+        run: |
+          # Several architectures in one binary, covering Turing through
+          # Hopper. The trailing 90-real plus PTX means future cards JIT
+          # rather than fail. This is why the binary is large.
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DLLAMA_CURL=ON \
+                -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90"
+          cmake --build build -j$(nproc) --target llama-server llama-quantize llama-bench
+
+      - name: Package
+        run: |
+          mkdir -p out
+          cp build/bin/llama-server build/bin/llama-quantize build/bin/llama-bench out/
+          cp build/bin/*.so out/ 2>/dev/null || true
+          tar -czf llama-server-linux-x64-cuda.tar.gz -C out .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-cuda
+          path: llama-server-linux-x64-cuda.tar.gz
+
+
+  windows-cuda:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.4.1'
+          method: network
+          sub-packages: '["nvcc","cudart","cublas","cublas_dev","visual_studio_integration"]'
+
+      - name: Build
+        shell: cmd
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DLLAMA_CURL=OFF ^
+                -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90"
+          cmake --build build --config Release --target llama-server llama-quantize llama-bench
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          # MSVC puts binaries in a per-configuration subdirectory, unlike the
+          # single-config generators used on macOS and Linux.
+          Copy-Item build\bin\Release\*.exe out\
+          Copy-Item build\bin\Release\*.dll out\ -ErrorAction SilentlyContinue
+          Compress-Archive -Path out\* -DestinationPath llama-server-windows-x64-cuda.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-cuda
+          path: llama-server-windows-x64-cuda.zip
+
+  windows-cpu:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        shell: cmd
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF
+          cmake --build build --config Release --target llama-server llama-quantize llama-bench
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item build\bin\Release\*.exe out\
+          Copy-Item build\bin\Release\*.dll out\ -ErrorAction SilentlyContinue
+          Compress-Archive -Path out\* -DestinationPath llama-server-windows-x64-cpu.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-cpu
+          path: llama-server-windows-x64-cpu.zip
+
+  release:
+    needs: [macos-arm64, linux-cpu, linux-cuda, windows-cpu, windows-cuda]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/**/*.tar.gz
+            dist/**/*.zip
+          generate_release_notes: true
+          body: |
+            Prebuilt `llama-server` with NF4DQ support.
+
+            These are what the CIU installer downloads. Nothing here needs to
+            be fetched by hand.
+
+            **NF4DQ is registered as ggml type 43**, which exists only in this
+            fork. GGUFs quantised with it will not load correctly in stock
+            llama.cpp.
+
+            Backends: CUDA and Metal have kernels. There is no Vulkan kernel
+            yet, so AMD and Intel GPUs fall back to a scalar CPU path that is
+            a correctness gate rather than a usable speed.
