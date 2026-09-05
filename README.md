@@ -52,8 +52,42 @@ test file. **These are the only two models NF4DQ has been tested on.** See
 | **NF4DQ** | **4.346 GiB** | **8.4181** |
 | Q3_K_M | 4.342 GiB | 9.2978 |
 
-Throughput, 27B on A100: prefill 729.84 tok/s, decode 60.21 tok/s, decode with
-MTP 92.56 tok/s.
+### Throughput
+
+**Qwen3.8-27B against Q4_K_M, same A100, same `llama-bench` run:**
+
+| Build | Size | prefill (pp512) | decode (tg128) |
+|---|---|---|---|
+| **NF4DQ** | **13.23 GiB** | 734.52 t/s | **60.81 t/s** |
+| Q4_K_M | 17.66 GiB | 1300.04 t/s | 48.67 t/s |
+
+25% smaller and 25% faster at decode. Prefill is slower because `mmq.cu` has
+no NF4DQ tile loader yet, so prompt processing takes the fallback path.
+
+**Qwen3.8-27B on an NVIDIA L4 (23 GB):**
+
+| | t/s |
+|---|---|
+| prefill (pp512) | 303.03 |
+| decode (tg128) | 16.84 |
+| decode with MTP, `--spec-draft-n-max 4` | 30.13 |
+
+About 16.9 GB resident with an 8k context in use. Multi-token prediction is
+worth 1.79x here against 1.54x on the A100, because speculative decoding
+trades compute for bandwidth and the L4 has compute to spare. A draft-depth
+sweep put the peak at 4 (41.9% acceptance); depth 2 was close behind, depth 6
+was worse, and depth 8 collapsed.
+
+**Qwen3.5-9B on an Apple M1 (8 GB), Metal:**
+
+| | prefill | decode |
+|---|---|---|
+| Metal (`-ngl 99`) | 13.19 t/s | 10.28 t/s |
+| CPU (`-ngl 0`) | 0.81 t/s | 0.72 t/s |
+
+The M1 is the narrowest-bandwidth chip in the Apple Silicon line, so this is
+near the floor rather than typical. Decode scales roughly with memory
+bandwidth. CPU and Metal produce token-identical output at temperature 0.
 
 **What this does and does not show.** NF4DQ sits above llama.cpp's own
 size-quality curve for K-quants: interpolating between Q3_K_M and Q4_K_M puts
@@ -75,7 +109,14 @@ cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-CUDA is currently the only accelerated backend. See [Limits](#limits).
+On Apple Silicon, Metal is enabled by default and needs no flags:
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
+
+CUDA and Metal are the accelerated backends. See [Limits](#limits).
 
 ---
 
@@ -139,9 +180,9 @@ linear attention rather than full attention. It is not known whether these
 results hold on a conventional dense model. Testing a dense Llama or Mistral is
 the single most useful thing anyone could contribute.
 
-**CUDA only for the fast path.** Dequantisation and a fused decode kernel exist
-for CUDA. There is no Metal, Vulkan or SIMD CPU kernel yet. A scalar CPU
-`vec_dot` exists as a correctness gate, not a performance path.
+**No Vulkan.** CUDA and Metal have kernels. There is no Vulkan kernel, so AMD
+and Intel GPUs fall back to the scalar CPU `vec_dot`, which is a correctness
+gate rather than a performance path. There is no SIMD CPU kernel either.
 
 **Batched prefill falls back.** `mmq.cu` has no NF4DQ tile loader, so prompt
 processing takes the slower path.
@@ -155,6 +196,10 @@ stock llama.cpp build will read NF4DQ files as that type and decode garbage
 rather than refusing. **NF4DQ GGUFs require this fork.** Do not assume a file
 that loads elsewhere is being read correctly.
 
+**MTP is 27B-only.** The 9B has no multi-token-prediction head, so the
+`--spec-type draft-mtp` numbers above come from the 27B. MTP on Metal is
+untested, since the 27B does not fit the machine it was verified on.
+
 **MoE and vision are untested.** MoE routers should not be quantised, since a
 routing error flips expert selection rather than degrading gently.
 `--tensor-type` can exclude them but this has not been tried. Vision towers
@@ -167,8 +212,8 @@ construction.
 
 | Model | Size | Link |
 |---|---|---|
-| Qwen3.5-9B-NF4DQ | 4.35 GiB | `<HF-REPO>` |
-| Qwen3.8-27B-NF4DQ | 13.23 GiB | `<HF-REPO>` |
+| Qwen3.5-9B-NF4DQ | 4.35 GiB | [KayceeSamuel/Qwen3.5-9B-NF4DQ](https://huggingface.co/KayceeSamuel/Qwen3.5-9B-NF4DQ) |
+| Qwen3.8-27B-NF4DQ | 13.23 GiB | [KayceeSamuel/Qwen3.8-27B-NF4DQ](https://huggingface.co/KayceeSamuel/Qwen3.8-27B-NF4DQ) |
 
 Both require this fork.
 
